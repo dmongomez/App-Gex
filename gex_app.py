@@ -38,7 +38,7 @@ st.markdown("""
         color: #f0f6fc;
     }
     .block-container {
-        padding-top: 1rem;
+        padding-top: 0.3rem;
         padding-bottom: 1rem;
     }
     /* Sidebar */
@@ -488,17 +488,22 @@ def make_gex_chart(df, levels, ratio, zoom_pct=0.04, threshold=0.02):
     )
 
     # Calls
+    dfp["spx_strike"] = (dfp["strike"] * ratio).round(0).astype(int)
     fig.add_trace(go.Bar(
         x=dfp["strike"], y=dfp["call"],
         name="Call GEX", marker_color=COLORS["green"],
-        opacity=0.85, hovertemplate="Strike: $%{x}<br>Call GEX: %{y:.3f}B<extra></extra>",
+        opacity=0.85,
+        customdata=dfp["spx_strike"],
+        hovertemplate="SPY: $%{x}  (SPX: %{customdata:,})<br>Call GEX: %{y:.3f}B<extra></extra>",
     ), row=1, col=1)
 
     # Puts
     fig.add_trace(go.Bar(
         x=dfp["strike"], y=dfp["put"],
         name="Put GEX", marker_color=COLORS["red"],
-        opacity=0.85, hovertemplate="Strike: $%{x}<br>Put GEX: %{y:.3f}B<extra></extra>",
+        opacity=0.85,
+        customdata=dfp["spx_strike"],
+        hovertemplate="SPY: $%{x}  (SPX: %{customdata:,})<br>Put GEX: %{y:.3f}B<extra></extra>",
     ), row=1, col=1)
 
     # Lineas de niveles
@@ -542,7 +547,9 @@ def make_gex_chart(df, levels, ratio, zoom_pct=0.04, threshold=0.02):
     fig.add_trace(go.Bar(
         x=dfp["strike"], y=dfp["net"],
         name="Net GEX", marker_color=net_colors,
-        opacity=0.82, hovertemplate="Strike: $%{x}<br>Net GEX: %{y:.3f}B<extra></extra>",
+        opacity=0.82,
+        customdata=dfp["spx_strike"],
+        hovertemplate="SPY: $%{x}  (SPX: %{customdata:,})<br>Net GEX: %{y:.3f}B<extra></extra>",
         showlegend=False,
     ), row=2, col=1)
 
@@ -661,13 +668,6 @@ with st.sidebar:
 
 # ── MAIN ──────────────────────────────────────────────────────────────────────
 now_str = datetime.now().strftime("%Y-%m-%d  %H:%M")
-st.markdown(
-    f'<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">'
-    f'<span class="main-header">{symbol} · GEX Dashboard</span>'
-    f'<span class="sub-header">{now_str}</span>'
-    f'</div>',
-    unsafe_allow_html=True
-)
 
 with st.spinner("Cargando datos de opciones..."):
     try:
