@@ -489,8 +489,9 @@ def make_gex_chart(df, levels, ratio, zoom_pct=0.04, threshold=0.02):
 
     fig = make_subplots(
         rows=2, cols=1,
-        row_heights=[0.65, 0.35],
-        vertical_spacing=0.08,
+        row_heights=[0.62, 0.38],
+        vertical_spacing=0.14,
+        shared_xaxes=True,
         subplot_titles=["Gamma Exposure por Strike (USD Bn)", "Net GEX por Strike"],
     )
 
@@ -534,20 +535,9 @@ def make_gex_chart(df, levels, ratio, zoom_pct=0.04, threshold=0.02):
             add_vline(fig, val, color, f"{label} ${val:.0f}", 1)
             add_vline(fig, val, color, "", 2)
 
-    # Eje SPX arriba (anotaciones)
-    spy_ticks = dfp["strike"].quantile([0.1, 0.3, 0.5, 0.7, 0.9]).round(0).values
-    for st_val in spy_ticks:
-        fig.add_annotation(
-            x=st_val, y=1.08, xref="x", yref="paper",
-            text="{:.0f}".format(st_val * ratio),
-            showarrow=False, font=dict(color=COLORS["yellow"], size=9),
-            xanchor="center",
-        )
-    fig.add_annotation(
-        x=0.5, y=1.13, xref="paper", yref="paper",
-        text="SPX equivalent", showarrow=False,
-        font=dict(color=COLORS["yellow"], size=10),
-    )
+    # Eje SPX: segundo eje X arriba usando ticktext
+    spx_tickvals = dfp["strike"].quantile([0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]).round(0).values
+    spx_ticktext = ["{:,.0f}".format(v * ratio) for v in spx_tickvals]
 
     # Net GEX (fila 2)
     net_colors = [COLORS["green"] if v >= 0 else COLORS["red"] for v in dfp["net"]]
@@ -561,21 +551,42 @@ def make_gex_chart(df, levels, ratio, zoom_pct=0.04, threshold=0.02):
     ), row=2, col=1)
 
     fig.update_layout(
-        height=580,
+        height=620,
         paper_bgcolor=COLORS["bg"],
         plot_bgcolor=COLORS["panel"],
         font=dict(color=COLORS["white"], family="JetBrains Mono"),
         legend=dict(
             bgcolor=COLORS["panel"], bordercolor=COLORS["border"],
-            orientation="h", y=1.02, x=0,
+            orientation="h", y=1.01, x=0,
         ),
-        margin=dict(l=50, r=20, t=80, b=40),
+        margin=dict(l=50, r=20, t=60, b=40),
         bargap=0.15,
         barmode="relative",
+        xaxis=dict(
+            tickvals=spx_tickvals.tolist(),
+            ticktext=[f"${v:.0f}" for v in spx_tickvals],
+            gridcolor=COLORS["border"],
+            tickfont=dict(color=COLORS["gray"]),
+        ),
+        xaxis2=dict(
+            gridcolor=COLORS["border"],
+            tickfont=dict(color=COLORS["gray"]),
+            matches="x",
+        ),
+        # Eje SPX encima del grafico principal
+        xaxis3=dict(
+            overlaying="x",
+            side="top",
+            tickvals=spx_tickvals.tolist(),
+            ticktext=spx_ticktext,
+            tickfont=dict(color=COLORS["yellow"], size=9),
+            title=dict(text="SPX", font=dict(color=COLORS["yellow"], size=10)),
+            showgrid=False,
+            zeroline=False,
+        ),
     )
     fig.update_xaxes(
-        gridcolor=COLORS["border"], showgrid=True,
-        tickfont=dict(color=COLORS["gray"]),
+        showgrid=True,
         title_font=dict(color=COLORS["gray"]),
     )
     fig.update_yaxes(
@@ -585,6 +596,7 @@ def make_gex_chart(df, levels, ratio, zoom_pct=0.04, threshold=0.02):
     )
     for ann in fig.layout.annotations:
         ann.font.color = COLORS["gray"]
+        ann.font.size  = 11
 
     return fig
 
