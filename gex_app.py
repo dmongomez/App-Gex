@@ -41,6 +41,13 @@ st.markdown("""
         padding-top: 0.3rem;
         padding-bottom: 1rem;
     }
+    /* Ocultar header y footer de Streamlit */
+    header[data-testid="stHeader"] {
+        display: none !important;
+    }
+    #MainMenu, footer {
+        display: none !important;
+    }
     /* Sidebar */
     [data-testid="stSidebar"] {
         background-color: #161b22;
