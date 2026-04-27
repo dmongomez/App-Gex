@@ -283,13 +283,13 @@ def fetch_close_estimate(ticker, symbol, ratio, levels, all_exps, risk_free):
     today   = datetime.today().date()
     is_expiry = str(today) in all_exps
 
-    # OI cercano
+    # ── OI cercano: solo +-5% del spot (antes era +-8%) ──────────────────────
     nearby = [e for e in all_exps
               if (datetime.strptime(e, "%Y-%m-%d").date() - today).days <= 2]
     if not nearby: nearby = list(all_exps[:2])
 
     oi_map = {}
-    lo_oi, hi_oi = spot * 0.92, spot * 1.08
+    lo_oi, hi_oi = spot * 0.95, spot * 1.05   # <-- reducido de 0.92/1.08
     for exp in nearby[:3]:
         try:
             chain = ticker.option_chain(exp)
@@ -308,6 +308,7 @@ def fetch_close_estimate(ticker, symbol, ratio, levels, all_exps, risk_free):
             oi_map.setdefault(k, {"call": 0, "put": 0})
             oi_map[k]["put"] += oi
 
+    import pandas as pd
     oi_df = pd.DataFrame([
         {"strike": k, "call_oi": v["call"], "put_oi": v["put"],
          "total_oi": v["call"] + v["put"]} for k, v in oi_map.items()
@@ -317,6 +318,7 @@ def fetch_close_estimate(ticker, symbol, ratio, levels, all_exps, risk_free):
     top3_oi     = oi_df.nlargest(3, "total_oi")[["strike","call_oi","put_oi","total_oi"]].copy()
     top3_oi["strike_spx"] = (top3_oi["strike"] * ratio).round(0).astype(int)
 
+    # Max pain desde OI filtrado
     pain_scores = {}
     for s_c in oi_df["strike"]:
         pain_scores[s_c] = sum(
@@ -325,16 +327,38 @@ def fetch_close_estimate(ticker, symbol, ratio, levels, all_exps, risk_free):
             for _, r in oi_df.iterrows())
     oi_max_pain = min(pain_scores, key=pain_scores.get) if pain_scores else spot
 
-    # M1: GEX
-    m1_t, m1_w = [oi_max_pain, pin_strike, spot], [0.35, 0.25, 0.05]
-    if gf and lo_oi <= gf <= hi_oi: m1_t.append(gf); m1_w.append(0.15)
-    if cw and lo_oi <= cw <= hi_oi: m1_t.append(cw); m1_w.append(0.10)
-    if pw and lo_oi <= pw <= hi_oi: m1_t.append(pw); m1_w.append(0.10)
-    tw = sum(m1_w)
-    m1_spy = sum(t * w for t, w in zip(m1_t, m1_w)) / tw
+    # Distancia del pin al spot (para medir su fiabilidad)
+    pin_dist_pct = abs(pin_strike - spot) / spot
+
+    # ── MODELO 1: GEX ────────────────────────────────────────────────────────
+    # En gamma positivo: Call/Put Wall y Gamma Flip pesan más que el pin OI
+    # En gamma negativo: pin OI y max pain pesan más
+    m1_targets, m1_weights = [], []
+
+    if net_gex >= 0:
+        # Gamma positivo: precio gravita hacia muros de gamma
+        if cw: m1_targets.append(cw); m1_weights.append(0.35)
+        if pw: m1_targets.append(pw); m1_weights.append(0.20)
+        if gf: m1_targets.append(gf); m1_weights.append(0.20)
+        # Pin OI pesa menos si está lejos del spot
+        pin_w = max(0.05, 0.15 * (1 - pin_dist_pct * 10))
+        m1_targets.append(oi_max_pain); m1_weights.append(pin_w)
+        m1_targets.append(pin_strike);  m1_weights.append(pin_w * 0.5)
+        m1_targets.append(spot);        m1_weights.append(0.05)
+    else:
+        # Gamma negativo: precio tiende a romper, pin OI más relevante
+        m1_targets.append(oi_max_pain); m1_weights.append(0.30)
+        m1_targets.append(pin_strike);  m1_weights.append(0.25)
+        if gf: m1_targets.append(gf);  m1_weights.append(0.20)
+        if cw: m1_targets.append(cw);  m1_weights.append(0.10)
+        if pw: m1_targets.append(pw);  m1_weights.append(0.10)
+        m1_targets.append(spot);        m1_weights.append(0.05)
+
+    tw = sum(m1_weights)
+    m1_spy = sum(t * w for t, w in zip(m1_targets, m1_weights)) / tw
     m1_spx = round(m1_spy * ratio, 0)
 
-    # M2: Tecnico
+    # ── MODELO 2: TECNICO ────────────────────────────────────────────────────
     try:
         h5  = ticker.history(period="1d",  interval="5m")
         hd  = ticker.history(period="30d", interval="1d")
@@ -349,18 +373,18 @@ def fetch_close_estimate(ticker, symbol, ratio, levels, all_exps, risk_free):
             vwap = float((h5["tp"] * h5["Volume"]).cumsum().iloc[-1] / h5["Volume"].cumsum().iloc[-1])
         else:
             vwap = spot
-        bias = 0.0
-        notes = []
-        if rsi > 60:   bias += 0.003; notes.append("RSI {:.0f} sobrecompra".format(rsi))
-        elif rsi < 40: bias -= 0.003; notes.append("RSI {:.0f} sobreventa".format(rsi))
+        bias = 0.0; notes = []
+        # RSI: sobrecompra/sobreventa con umbrales más amplios (antes 60/40)
+        if rsi > 65:   bias += 0.003; notes.append("RSI {:.0f} sobrecompra".format(rsi))
+        elif rsi < 35: bias -= 0.003; notes.append("RSI {:.0f} sobreventa".format(rsi))
         else:          notes.append("RSI {:.0f} neutro".format(rsi))
         if ema9 > ema21: bias += 0.002; notes.append("EMA9>21 alcista")
         else:            bias -= 0.002; notes.append("EMA9<21 bajista")
         dv = (spot - vwap) / vwap
-        if dv > 0.003:   bias -= 0.001; notes.append("Sobre VWAP")
+        if dv > 0.003:    bias -= 0.001; notes.append("Sobre VWAP")
         elif dv < -0.003: bias += 0.001; notes.append("Bajo VWAP")
         else:             notes.append("En VWAP")
-        m2_spy  = spot * (1 + bias)
+        m2_spy = spot * (1 + bias)
         m2_note = " | ".join(notes)
         m2_rsi  = rsi
         m2_vwap_spx = round(vwap * ratio, 0)
@@ -368,7 +392,7 @@ def fetch_close_estimate(ticker, symbol, ratio, levels, all_exps, risk_free):
         m2_spy = spot; m2_note = "Sin datos técnicos"; m2_rsi = None; m2_vwap_spx = None
     m2_spx = round(m2_spy * ratio, 0)
 
-    # M3: Volatilidad
+    # ── MODELO 3: VOLATILIDAD ────────────────────────────────────────────────
     try:
         vix = float(yf.Ticker("^VIX").fast_info["last_price"])
     except Exception:
@@ -383,18 +407,30 @@ def fetch_close_estimate(ticker, symbol, ratio, levels, all_exps, risk_free):
     if vix > 25:   v_bias -= 0.004; v_notes.append("VIX {:.1f} alto".format(vix))
     elif vix > 18: v_bias -= 0.001; v_notes.append("VIX {:.1f} moderado".format(vix))
     else:          v_bias += 0.001; v_notes.append("VIX {:.1f} bajo".format(vix))
-    if net_gex >= 0: v_notes.append("GEX+ comprime"); range_pct = max(0.002, 0.005 - net_gex / 200)
-    else:            v_notes.append("GEX- amplifica"); range_pct = min(0.015, 0.005 + abs(net_gex) / 200)
-    if rel_vol > 1.4: v_bias *= 1.2; range_pct *= 1.2; v_notes.append("Vol {:.1f}x alto".format(rel_vol))
+
+    if net_gex >= 0:
+        v_notes.append("GEX+ comprime"); range_pct = max(0.002, 0.005 - net_gex / 200)
+    else:
+        v_notes.append("GEX- amplifica"); range_pct = min(0.015, 0.005 + abs(net_gex) / 200)
+
+    if rel_vol > 1.4:  v_bias *= 1.2; range_pct *= 1.2; v_notes.append("Vol {:.1f}x alto".format(rel_vol))
     elif rel_vol < 0.7: range_pct *= 0.8; v_notes.append("Vol {:.1f}x bajo".format(rel_vol))
-    m3_spy  = spot * (1 + v_bias)
-    m3_spx  = round(m3_spy * ratio, 0)
+
+    m3_spy = spot * (1 + v_bias)
+    m3_spx = round(m3_spy * ratio, 0)
     m3_note = " | ".join(v_notes)
 
-    # M4: Consenso
-    w1 = 0.45 + (0.10 if is_expiry else 0)
-    w2 = 0.30
-    w3 = 0.25 + (0.10 if vix > 22 else 0)
+    # ── MODELO 4: CONSENSO PONDERADO ────────────────────────────────────────
+    # Gamma positivo: M1 (GEX/muros) pesa más. Gamma negativo: más equilibrado.
+    if net_gex >= 0:
+        w1 = 0.50 + (0.05 if is_expiry else 0)   # GEX pesa más en gamma+
+        w2 = 0.28
+        w3 = 0.22 + (0.05 if vix > 22 else 0)
+    else:
+        w1 = 0.38 + (0.07 if is_expiry else 0)
+        w2 = 0.32
+        w3 = 0.30 + (0.07 if vix > 22 else 0)
+
     tw2 = w1 + w2 + w3
     w1, w2, w3 = w1/tw2, w2/tw2, w3/tw2
     m4_spy = m1_spy * w1 + m2_spy * w2 + m3_spy * w3
@@ -407,13 +443,14 @@ def fetch_close_estimate(ticker, symbol, ratio, levels, all_exps, risk_free):
     conf    = "Alta" if div < 30 else "Media" if div < 80 else "Baja"
 
     return {
-        "m1_spx": m1_spx, "m1_spy": round(m1_spy, 2), "m1_note": "Max Pain OI + Pin + Muros",
+        "m1_spx": m1_spx, "m1_spy": round(m1_spy, 2), "m1_note": "Muros GEX + Pin OI filtrado ±5%",
         "m2_spx": m2_spx, "m2_spy": round(m2_spy, 2), "m2_note": m2_note,
         "m3_spx": m3_spx, "m3_spy": round(m3_spy, 2), "m3_note": m3_note,
         "m4_spx": m4_spx, "m4_spy": round(m4_spy, 2),
         "spx_low": spx_lo, "spx_high": spx_hi,
         "pin_spx": round(pin_strike * ratio, 0),
         "maxpain_spx": round(oi_max_pain * ratio, 0),
+        "pin_dist_pct": round(pin_dist_pct * 100, 1),
         "vix": vix, "rel_vol": rel_vol, "rsi": m2_rsi,
         "vwap_spx": m2_vwap_spx,
         "is_expiry": is_expiry,
@@ -422,7 +459,6 @@ def fetch_close_estimate(ticker, symbol, ratio, levels, all_exps, risk_free):
         "weights": (round(w1, 2), round(w2, 2), round(w3, 2)),
         "exps_used": nearby[:3],
     }
-
 
 def build_narrative(levels, ratio):
     spot    = levels.get("spot", 0)
