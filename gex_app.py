@@ -181,7 +181,7 @@ def bs_gamma(S, K, T, r, sigma):
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def fetch_all_data(symbol, num_exp, risk_free, selected_exps=None):
+def fetch_all_data(symbol, num_exp, risk_free):
     """Descarga GEX, niveles y estimaciones. Cache de 5 minutos."""
     ticker = yf.Ticker(symbol)
 
@@ -200,13 +200,7 @@ def fetch_all_data(symbol, num_exp, risk_free, selected_exps=None):
         ratio = 10.0
 
     all_exps = ticker.options
-    if selected_exps:
-        # Usar solo las expiraciones seleccionadas por el usuario
-        exps = [e for e in selected_exps if e in all_exps]
-        if not exps:
-            exps = list(all_exps[:num_exp])
-    else:
-        exps = list(all_exps[:num_exp])
+    exps = all_exps[:num_exp]
     today = datetime.today()
     K_LO, K_HI = spot * 0.85, spot * 1.15
     rows = []
@@ -705,42 +699,10 @@ with st.sidebar:
         index=0,
         help="SPY replica el S&P 500. Los niveles se convierten a SPX."
     )
+    num_exp = st.slider("Expiraciones", min_value=1, max_value=6, value=4,
+                        help="1=cierre hoy, 2-3=próximos días, 4=semana, 5-6=mensual")
     zoom_pct = st.slider("Zoom gráfico ±%", min_value=1, max_value=10, value=3,
                          help="Rango de strikes visible alrededor del spot") / 100
-
-    st.markdown("---")
-
-    # Cargar expiraciones disponibles para el ticker seleccionado
-    st.markdown('<div style="font-size:0.8rem;color:#8b949e;font-family:JetBrains Mono,monospace;margin-bottom:4px">EXPIRACIONES</div>', unsafe_allow_html=True)
-    try:
-        _ticker_exps = yf.Ticker(symbol).options[:8]
-        from datetime import date as _date
-        today_d = _date.today()
-
-        def _exp_label(e):
-            d = datetime.strptime(e, "%Y-%m-%d").date()
-            days = (d - today_d).days
-            if days == 0:   suffix = " · HOY 0DTE"
-            elif days == 1: suffix = " · mañana"
-            elif days <= 7: suffix = f" · {days}d"
-            else:           suffix = f" · {days}d"
-            return e + suffix
-
-        exp_labels   = [_exp_label(e) for e in _ticker_exps]
-        # Default: primeras 4
-        default_sel  = exp_labels[:4]
-        selected_exp_labels = st.multiselect(
-            "",
-            options=exp_labels,
-            default=default_sel,
-            help="0DTE = precision intradía. Mas expiraciones = vision semanal/mensual."
-        )
-        # Extraer fechas puras de las etiquetas seleccionadas
-        selected_exps = [l[:10] for l in selected_exp_labels]
-        num_exp = len(selected_exps) if selected_exps else 1
-    except Exception:
-        selected_exps = None
-        num_exp = 4
 
     st.markdown("---")
     actualizar = st.button("🔄  Actualizar datos")
@@ -764,7 +726,7 @@ now_str = datetime.now().strftime("%Y-%m-%d  %H:%M")
 
 with st.spinner("Cargando datos de opciones..."):
     try:
-        df, levels, ratio, exps, close = fetch_all_data(symbol, num_exp, 0.053, tuple(selected_exps) if selected_exps else None)
+        df, levels, ratio, exps, close = fetch_all_data(symbol, num_exp, 0.053)
     except Exception as e:
         st.error(f"Error cargando datos: {e}")
         st.stop()
