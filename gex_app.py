@@ -180,22 +180,40 @@ def bs_gamma(S, K, T, r, sigma):
         return 0.0
 
 
-@st.cache_data(ttl=300, show_spinner=False)
+def safe_fast_info(ticker, retries=3, wait=4):
+    """Obtiene fast_info con reintentos si hay rate limit."""
+    import time
+    for i in range(retries):
+        try:
+            price = ticker.fast_info["last_price"]
+            if price and float(price) > 0:
+                return float(price)
+        except Exception as e:
+            if i < retries - 1:
+                time.sleep(wait * (i + 1))
+    return None
+
+
+@st.cache_data(ttl=600, show_spinner=False)
 def fetch_all_data(symbol, num_exp, risk_free):
     """Descarga GEX, niveles y estimaciones. Cache de 5 minutos."""
+    import time
     ticker = yf.Ticker(symbol)
 
     # Spot
-    try:
-        spot = float(ticker.fast_info["last_price"])
-    except Exception:
-        hist = ticker.history(period="2d")
-        spot = float(hist["Close"].iloc[-1])
+    spot = safe_fast_info(ticker)
+    if not spot:
+        try:
+            hist = ticker.history(period="2d")
+            spot = float(hist["Close"].iloc[-1])
+        except Exception:
+            raise Exception("No se pudo obtener el precio. Espera 30 segundos y pulsa Actualizar.")
 
-    # Ratio SPY->SPX
+    # Ratio SPY->SPX (con pausa para evitar rate limit)
+    time.sleep(1)
     try:
-        spx_price = float(yf.Ticker("^GSPC").fast_info["last_price"])
-        ratio = spx_price / spot
+        spx_price = safe_fast_info(yf.Ticker("^GSPC"))
+        ratio = spx_price / spot if spx_price else 10.0
     except Exception:
         ratio = 10.0
 
@@ -205,7 +223,9 @@ def fetch_all_data(symbol, num_exp, risk_free):
     K_LO, K_HI = spot * 0.85, spot * 1.15
     rows = []
 
-    for exp in exps:
+    for i, exp in enumerate(exps):
+        if i > 0:
+            time.sleep(1.5)  # pausa entre cadenas para evitar rate limit
         try:
             chain = ticker.option_chain(exp)
         except Exception:
@@ -393,8 +413,10 @@ def fetch_close_estimate(ticker, symbol, ratio, levels, all_exps, risk_free):
     m2_spx = round(m2_spy * ratio, 0)
 
     # ── MODELO 3: VOLATILIDAD ────────────────────────────────────────────────
+    import time as _time
+    _time.sleep(1)
     try:
-        vix = float(yf.Ticker("^VIX").fast_info["last_price"])
+        vix = safe_fast_info(yf.Ticker("^VIX")) or 20.0
     except Exception:
         vix = 20.0
     try:
@@ -713,7 +735,7 @@ with st.sidebar:
     st.markdown("""
     <div style="font-size:0.72rem; color:#8b949e; font-family:'JetBrains Mono',monospace;">
     Datos: Yahoo Finance (delayed)<br>
-    Cache: 5 minutos<br>
+    Cache: 10 minutos<br>
     GEX: Black-Scholes propio<br><br>
     ⚠️ Solo informativo.<br>
     No es consejo de inversión.
